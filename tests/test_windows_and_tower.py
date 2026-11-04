@@ -4,7 +4,8 @@ import torch
 
 from jds.config import paths
 from jds.prepare import load
-from jds.twotower.data import Stores, time_bucket
+from jds.twotower.data import N_FEAT, SEGMENTS, Stores, time_bucket
+from jds.twotower.model import CATE1, QueryUserTower
 from jds.twotower.train import inbatch_loss, listwise_loss
 from jds.windows import feature_windows, segment_bounds
 
@@ -75,3 +76,23 @@ def test_inbatch_loss_masks_duplicates():
     items = torch.tensor([1, 1, 2, 3])
     loss = inbatch_loss(u, u.clone(), items, torch.ones(4), 10.0)
     assert torch.isfinite(loss)
+
+
+def test_match_flags_ignore_padding_and_unknown_categories():
+    candidates = torch.tensor([[1, 2, 3]])
+    rows = torch.zeros((1, 3, N_FEAT), dtype=torch.long)
+    rows[0, 1:, CATE1] = 7
+    history = {s: torch.zeros((1, 2, N_FEAT), dtype=torch.long) for s in SEGMENTS}
+    ctx = {s: {"item": torch.zeros((1, 2), dtype=torch.long),
+               "mask": torch.zeros((1, 2), dtype=torch.bool)} for s in SEGMENTS}
+    flags = QueryUserTower.match_flags(None, rows, candidates, history, ctx)
+    assert flags.eq(0).all()
+
+    # Item 2 and category 7 appear in one real short-history event only.
+    ctx["short"]["item"][0, 0] = 2
+    ctx["short"]["mask"][0, 0] = True
+    history["short"][0, 0, CATE1] = 7
+    flags = QueryUserTower.match_flags(None, rows, candidates, history, ctx)
+    assert flags[0, 0].tolist() == [0, 0, 0, 0, 0, 0]
+    assert flags[0, 1].tolist() == [1, 1, 0, 0, 0, 0]
+    assert flags[0, 2].tolist() == [0, 1, 0, 0, 0, 0]
